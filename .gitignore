@@ -1,0 +1,5 @@
+/.temp/
+/.loup-cache/
+/loup-macos-notepad
+*.loupbuild.fp
+.DS_Store

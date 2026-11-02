@@ -1,0 +1,86 @@
+@mode(host.scripted)
+
+from debug.assert import (expect, expectEq);
+from document import (Document, UNTITLED, CHOICE_SAVE, CHOICE_DONT_SAVE, CHOICE_CANCEL, untitled,
+    withText, savedAt, hasFile, displayName, windowTitle, suggestedName, unsavedChoices,
+    unsavedQuestion);
+
+func test_a_new_document_is_untitled_and_clean(): void {
+    let d = untitled();
+    expect(not hasFile(d), "no file");
+    expect(not d.edited, "not edited");
+    expectEq(displayName(d), UNTITLED, "name");
+    expectEq(windowTitle(d), "Untitled", "title");
+    expectEq(suggestedName(d), "Untitled.txt", "Save panel name");
+    return;
+}
+
+func test_an_edit_marks_the_title(): void {
+    let d = withText(untitled(), "x");
+    expect(d.edited, "edited");
+    expectEq(windowTitle(d), "Untitled — Edited", "title");
+    return;
+}
+
+func test_saving_names_the_document_and_clears_the_mark(): void {
+    let d = savedAt("/Users/someone/notes/todo.txt", "buy milk");
+    expect(hasFile(d), "has a file");
+    expect(not d.edited, "clean after saving");
+    expectEq(displayName(d), "todo.txt", "name");
+    expectEq(windowTitle(d), "todo.txt", "title");
+    expectEq(suggestedName(d), "todo.txt", "Save panel name");
+    let changed = withText(d, "buy milk and eggs");
+    expectEq(windowTitle(changed), "todo.txt — Edited", "title after another edit");
+    expectEq(changed.path, d.path, "an edit keeps the file");
+    expectEq(changed.savedText, "buy milk", "an edit keeps the saved text");
+    return;
+}
+
+func test_getting_back_to_the_saved_text_clears_the_mark(): void {
+    let d = savedAt("/x/notes.txt", "café");
+    let edited = withText(d, "café!");
+    expect(edited.edited, "edited");
+    let undone = withText(edited, "café");
+    expect(not undone.edited, "undone back to the saved text");
+    expectEq(windowTitle(undone), "notes.txt", "title after the undo");
+    let redone = withText(undone, "café!");
+    expectEq(windowTitle(redone), "notes.txt — Edited", "title after the redo");
+    return;
+}
+
+func test_an_untitled_document_is_edited_while_it_has_text(): void {
+    let d = withText(untitled(), "a");
+    expect(d.edited, "some text");
+    expect(not withText(d, "").edited, "emptied again");
+    return;
+}
+
+func test_the_comparison_is_exact(): void {
+    let d = savedAt("/x/a.txt", "line\n");
+    expect(withText(d, "line\r\n").edited, "a different line break");
+    expect(withText(d, "line").edited, "a missing line break");
+    expect(withText(d, "Line\n").edited, "a different case");
+    expect(not withText(d, "line\n").edited, "the same text");
+    return;
+}
+
+func test_unicode_file_names(): void {
+    let d = savedAt("/Users/someone/Résumé 😀.txt", "");
+    expectEq(windowTitle(withText(d, "😀")), "Résumé 😀.txt — Edited", "title");
+    return;
+}
+
+func test_the_unsaved_alert_buttons_follow_the_choice_values(): void {
+    let buttons = unsavedChoices();
+    expectEq(buttons.len(), 3, "three buttons");
+    expectEq(buttons[CHOICE_SAVE], "Save", "first");
+    expectEq(buttons[CHOICE_DONT_SAVE], "Don't Save", "second");
+    expectEq(buttons[CHOICE_CANCEL], "Cancel", "third");
+    return;
+}
+
+func test_the_unsaved_question_names_the_document(): void {
+    expectEq(unsavedQuestion(untitled()), "Do you want to save the changes made to \"Untitled\"?", "untitled");
+    expectEq(unsavedQuestion(savedAt("/x/notes.txt", "")), "Do you want to save the changes made to \"notes.txt\"?", "named");
+    return;
+}

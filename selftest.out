@@ -1,0 +1,81 @@
+[start]
+  title: Untitled
+  status: 0 lines · 0 words · 0 characters
+  at its minimum size the toolbar fits: true
+[typed]
+  title: Untitled — Edited
+  status: 3 lines · 23 words · 110 characters
+[find]
+  find field: fox -> 5 matches
+  find: 1 of 5, selected [fox] at 16
+  find: 2 of 5, selected [fox] at 91
+  find: 3 of 5, selected [fox] at 96
+  find: 4 of 5, selected [fox] at 99
+  find: 5 of 5, selected [fox] at 107
+  find: 1 of 5, selected [fox] at 16
+  find field: FOX -> 5 matches
+  find: 2 of 5, selected [fox] at 91
+[font] size control: 16 pt, monospaced box: true, text view font: 16 pt, fixed pitch: true
+[saved]
+  title: notes.txt
+  status: 3 lines · 23 words · 110 characters
+  file on disk matches the editor: true
+[edited after saving]
+  title: notes.txt — Edited
+  status: 4 lines · 26 words · 127 characters
+  find: 5 matches
+[Undo]
+  title: notes.txt
+  status: 3 lines · 23 words · 110 characters
+[Redo (⇧⌘Z)]
+  title: notes.txt — Edited
+  status: 4 lines · 26 words · 127 characters
+[New, Cancel]
+  title: notes.txt — Edited
+  status: 4 lines · 26 words · 127 characters
+  alert: Do you want to save the changes made to "notes.txt"? [Save, Don't Save, Cancel] -> 2
+[New, Don't Save]
+  title: Untitled
+  status: 0 lines · 0 words · 0 characters
+  alert: Do you want to save the changes made to "notes.txt"? [Save, Don't Save, Cancel] -> 1
+  find: No matches
+  undo available: false
+[Open, Save first]
+  title: notes.txt
+  status: 3 lines · 23 words · 110 characters
+  alert: Do you want to save the changes made to "Untitled"? [Save, Don't Save, Cancel] -> 0
+  scratch.txt on disk: Scratch ✓
+  find: 5 matches
+  dialog answers left: 0
+  undo available: false
+  | The quick brown fox jumps over the lazy dog.
+  | A second line: naïve café, 日本語, emoji 😀 and a fox.
+  | foxfox and fox
+[Save As]
+  title: copy.txt
+  status: 3 lines · 23 words · 110 characters
+  copy on disk matches the editor: true
+[Open a file that is not UTF-8]
+  title: copy.txt
+  status: 3 lines · 23 words · 110 characters
+  info: The document “latin1.txt” could not be opened. -> OK
+[Find Next (⌘G)]
+  find: 1 of 5, selected [fox] at 16
+[Close (⌘W), Cancel]
+  title: copy.txt — Edited
+  status: 4 lines · 25 words · 119 characters
+  window open: true, edited mark: true
+  alert: Do you want to save the changes made to "copy.txt"? [Save, Don't Save, Cancel] -> 2
+[Close (⌘W), the check throws]
+  window open: true, handler errors: 1, title: copy.txt — Edited
+[Quit while the window is off screen]
+  window visible: false, file in the title bar: copy.txt
+  the check throws -> quit now: false, handler errors: 1
+  ⌘Q taken: true, Cancel -> still running, dialog answers left: 0
+  alert: Do you want to save the changes made to "copy.txt"? [Save, Don't Save, Cancel] -> 2
+  Save -> quit now: true
+  alert: Do you want to save the changes made to "copy.txt"? [Save, Don't Save, Cancel] -> 0
+[saved before quitting]
+  title: copy.txt
+  status: 4 lines · 25 words · 119 characters
+  copy on disk matches the editor: true, edited mark: false

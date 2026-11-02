@@ -1,0 +1,73 @@
+@mode(host.dual)
+
+# textstats — the numbers in the notepad's status bar: lines, words and
+# characters of a text.
+#
+# Characters are Unicode scalar values (what `string.length()` counts), so an
+# accented letter or an emoji is one character, however many UTF-8 bytes or
+# UTF-16 units it takes. A word is a maximal run of non-whitespace characters
+# (Unicode White_Space, so a no-break space or an ideographic space separates
+# words too). Lines are counted the way an editor shows them: an empty text
+# has none, any other text has one more line than it has line breaks, and a
+# line break is "\n", "\r\n" or a lone "\r".
+
+## The counts shown in the status bar.
+pub struct TextStats {
+    pub lines: int;
+    pub words: int;
+    pub characters: int;
+}
+
+## Count the lines, words and characters of `text`.
+pub func textStats(text: string): TextStats {
+    let scalars = text.scalars();
+    let characters = scalars.len();
+    var breaks = 0;
+    var words = 0;
+    var in_word = false;
+    var previous_cr = false;
+    for (c in scalars) {
+        let code = c.toInt();
+        # "\r\n" is one break: the "\r" counted it already.
+        if (code == 13) {
+            breaks = breaks + 1;
+        } else if (code == 10 and not previous_cr) {
+            breaks = breaks + 1;
+        }
+        previous_cr = code == 13;
+
+        if (c.isWhitespace()) {
+            in_word = false;
+        } else if (not in_word) {
+            in_word = true;
+            words = words + 1;
+        }
+    }
+
+    var lines = 0;
+    if (characters > 0) {
+        lines = breaks + 1;
+    }
+    let stats = TextStats(lines = lines, words = words, characters = characters);
+    return stats;
+}
+
+## "1 line", "2 lines", "0 words": `count` followed by the singular or the
+## plural noun.
+pub func countOf(count: int, singular: string, plural: string): string {
+    var noun = plural;
+    if (count == 1) {
+        noun = singular;
+    }
+    let text = count.to_string() + " " + noun;
+    return text;
+}
+
+## The status bar's text, e.g. "2 lines · 5 words · 27 characters".
+pub func statusLine(stats: TextStats): string {
+    let lines = countOf(stats.lines, "line", "lines");
+    let words = countOf(stats.words, "word", "words");
+    let characters = countOf(stats.characters, "character", "characters");
+    let line = lines + " · " + words + " · " + characters;
+    return line;
+}

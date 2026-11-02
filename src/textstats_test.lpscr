@@ -1,0 +1,78 @@
+@mode(host.scripted)
+
+from debug.assert import (expectEq);
+from textstats import (TextStats, textStats, countOf, statusLine);
+
+func test_empty_text_has_nothing(): void {
+    let s = textStats("");
+    expectEq(s.lines, 0, "lines of empty text");
+    expectEq(s.words, 0, "words of empty text");
+    expectEq(s.characters, 0, "characters of empty text");
+    return;
+}
+
+func test_one_line(): void {
+    let s = textStats("The quick brown fox");
+    expectEq(s.lines, 1, "lines");
+    expectEq(s.words, 4, "words");
+    expectEq(s.characters, 19, "characters");
+    return;
+}
+
+func test_lines_are_breaks_plus_one(): void {
+    expectEq(textStats("a\nb\nc").lines, 3, "three lines");
+    # A trailing break starts an (empty) last line, as an editor shows it.
+    expectEq(textStats("a\n").lines, 2, "trailing break");
+    expectEq(textStats("\n").lines, 2, "a lone break");
+    expectEq(textStats("\n\n\n").lines, 4, "only breaks");
+    return;
+}
+
+func test_crlf_is_one_break_and_a_lone_cr_is_one(): void {
+    expectEq(textStats("a\r\nb").lines, 2, "CRLF");
+    expectEq(textStats("a\rb\rc").lines, 3, "lone CRs");
+    expectEq(textStats("a\r\n\r\nb").lines, 3, "two CRLFs");
+    expectEq(textStats("a\r\nb").characters, 4, "CR and LF are characters");
+    return;
+}
+
+func test_words_split_on_any_whitespace(): void {
+    expectEq(textStats("  leading and trailing  ").words, 3, "outer spaces");
+    expectEq(textStats("tabs\tand\nnewlines").words, 3, "tab and newline");
+    expectEq(textStats("   \n\t ").words, 0, "whitespace only");
+    # A no-break space and an ideographic space separate words too.
+    expectEq(textStats("a\u{a0}b\u{3000}c").words, 3, "Unicode spaces");
+    # Punctuation belongs to the word it touches.
+    expectEq(textStats("don't stop—ever.").words, 2, "punctuation");
+    return;
+}
+
+func test_unicode_counts_scalars_not_bytes(): void {
+    let latin = textStats("héllo wörld");
+    expectEq(latin.characters, 11, "accented characters");
+    expectEq(latin.words, 2, "accented words");
+    let emoji = textStats("😀 ok ✓");
+    expectEq(emoji.characters, 6, "emoji characters");
+    expectEq(emoji.words, 3, "emoji words");
+    let cjk = textStats("日本語のテキスト");
+    expectEq(cjk.characters, 8, "CJK characters");
+    expectEq(cjk.words, 1, "CJK without spaces is one word");
+    expectEq(cjk.lines, 1, "CJK lines");
+    return;
+}
+
+func test_count_of_uses_the_singular_for_one(): void {
+    expectEq(countOf(1, "line", "lines"), "1 line", "one");
+    expectEq(countOf(0, "line", "lines"), "0 lines", "zero");
+    expectEq(countOf(12, "word", "words"), "12 words", "many");
+    return;
+}
+
+func test_status_line(): void {
+    expectEq(statusLine(textStats("")), "0 lines · 0 words · 0 characters", "empty");
+    expectEq(statusLine(textStats("a")), "1 line · 1 word · 1 character", "singular");
+    expectEq(statusLine(textStats("Hi there\nyou")), "2 lines · 3 words · 12 characters", "two lines");
+    let custom = TextStats(lines = 2, words = 1, characters = 7);
+    expectEq(statusLine(custom), "2 lines · 1 word · 7 characters", "from a struct");
+    return;
+}

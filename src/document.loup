@@ -1,0 +1,97 @@
+@mode(host.dual)
+
+# document — the open file's state: where it lives (if anywhere), the text
+# it was last opened, saved or created with, whether the current text differs
+# from that (unsaved edits), and what the window title, the Save panel and the
+# unsaved-changes alert show for it. A value: the functions return updated
+# copies.
+#
+# "Edited" compares texts rather than counting edits, so undoing back to the
+# saved text (or typing a letter and deleting it) clears the mark, and the
+# unsaved-changes alert is asked only when something would really be lost.
+
+from io.path import (basename);
+
+## The name of a document that has never been saved.
+pub const UNTITLED: string = "Untitled";
+
+## What the unsaved-changes alert's buttons mean (their indexes).
+pub const CHOICE_SAVE: int = 0;
+pub const CHOICE_DONT_SAVE: int = 1;
+pub const CHOICE_CANCEL: int = 2;
+
+## The file being edited.
+pub struct Document {
+    ## The file's path; "" while the document is untitled.
+    pub path: string;
+    ## The text as it was last opened, saved or created.
+    pub savedText: string;
+    ## Whether the current text differs from `savedText`.
+    pub edited: bool;
+}
+
+## A new, empty, untitled document.
+pub func untitled(): Document {
+    let doc = Document(path = "", savedText = "", edited = false);
+    return doc;
+}
+
+## `doc` once its text is `text` (after an edit, an undo or a redo): edited
+## exactly when `text` is not the saved text.
+pub func withText(doc: Document, text: string): Document {
+    let edited = text != doc.savedText;
+    let changed = Document(path = doc.path, savedText = doc.savedText, edited = edited);
+    return changed;
+}
+
+## The document whose `text` was just written to, or read from, `path`.
+pub func savedAt(path: string, text: string): Document {
+    let doc = Document(path = path, savedText = text, edited = false);
+    return doc;
+}
+
+## Whether the document has a file (Save writes there without asking).
+pub func hasFile(doc: Document): bool {
+    let has = doc.path != "";
+    return has;
+}
+
+## The file name, or "Untitled".
+pub func displayName(doc: Document): string {
+    var name = UNTITLED;
+    if (hasFile(doc)) {
+        name = basename(doc.path);
+    }
+    return name;
+}
+
+## The window title: the file name, then " — Edited" while there are unsaved
+## changes (the macOS convention).
+pub func windowTitle(doc: Document): string {
+    var title = displayName(doc);
+    if (doc.edited) {
+        title = title + " — Edited";
+    }
+    return title;
+}
+
+## The name the Save panel proposes.
+pub func suggestedName(doc: Document): string {
+    var name = UNTITLED + ".txt";
+    if (hasFile(doc)) {
+        name = basename(doc.path);
+    }
+    return name;
+}
+
+## The unsaved-changes alert's buttons, in the order of the CHOICE_* values.
+pub func unsavedChoices(): list[string] {
+    let buttons = ["Save", "Don't Save", "Cancel"];
+    return buttons;
+}
+
+## The unsaved-changes alert's question for `doc`.
+pub func unsavedQuestion(doc: Document): string {
+    let q = "Do you want to save the changes made to \"" + displayName(doc) + "\"?";
+    return q;
+}

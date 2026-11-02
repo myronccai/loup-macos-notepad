@@ -1,0 +1,154 @@
+@mode(host.dual)
+
+# find — the notepad's Find: every place a query occurs in the text, the
+# "Next" step over them and the match-count label.
+#
+# Positions here are Unicode scalar indexes (what `string[i]` and
+# `string.length()` use). AppKit's text view selects by UTF-16 unit, where a
+# character outside the Basic Multilingual Plane (most emoji) takes two units;
+# the app converts at the boundary with appkit.text's `utf16Offset` /
+# `scalarIndex`.
+#
+# Matching ignores letter case with `foldChar`, a one-to-one fold (it never
+# changes the number of characters, so match positions in the folded text are
+# positions in the original). Matches may overlap: "aa" occurs twice in "aaa",
+# at 0 and at 1.
+
+## ς (U+03C2), the final form of σ (U+03C3).
+const FINAL_SIGMA: int = 962;
+const SIGMA: int = 963;
+
+## The code point of `c` with its letter case folded, one character to one:
+## `char.toLower()` (Unicode's lower-case mapping wherever the lower case is a
+## single character, in every script), and final ς folded to σ so that
+## "ΟΔΟΣ" and "οδος" match. A letter whose lower case is longer than one
+## character (İ, whose lower case is "i" + a combining dot) stays as it is;
+## ß matches ß and ẞ, but not "SS" (two characters).
+pub func foldChar(c: char): int {
+    var folded = c.toLower().toInt();
+    if (folded == FINAL_SIGMA) {
+        folded = SIGMA;
+    }
+    return folded;
+}
+
+## The code points of `text`, case-folded.
+func foldedCodes(text: string): list[int] {
+    var codes: list[int] = [];
+    for (c in text.scalars()) {
+        let code = foldChar(c);
+        codes.push(code);
+    }
+    return codes;
+}
+
+## The scalar index of every occurrence of `query` in `text`, in order,
+## overlapping ones included, ignoring letter case. An empty query has no
+## matches.
+pub func findAll(text: string, query: string): list[int] {
+    var starts: list[int] = [];
+    let needle = foldedCodes(query);
+    let n = needle.len();
+    if (n == 0) {
+        # No query (the usual case while typing): the text is not even read.
+        return starts;
+    }
+    let hay = foldedCodes(text);
+    var start = 0;
+    while (start + n <= hay.len()) {
+        var k = 0;
+        while (k < n and hay[start + k] == needle[k]) {
+            k = k + 1;
+        }
+        if (k == n) {
+            starts.push(start);
+        }
+        start = start + 1;
+    }
+    return starts;
+}
+
+## The Find state: the query, its matches in the current text, and which one
+## "Next" selected last. A value: the functions below return a new one.
+pub struct FindState {
+    pub query: string;
+    ## The scalar index of every match, in order.
+    pub matches: list[int];
+    ## The index into `matches` of the match "Next" selected; -1 before the
+    ## first "Next" since the last edit or change of the query.
+    pub current: int;
+}
+
+## No query, no matches.
+pub func emptyFind(): FindState {
+    let state = FindState(query = "", matches = [], current = -1);
+    return state;
+}
+
+## The matches of `query` in `text`, none of them selected yet. The app
+## calls it after every edit and every change of the query: the text view's
+## selection does not stay on a match through an edit (typing replaces it
+## with the insertion point), so a position counted before the edit could
+## name a different match than the one on screen.
+pub func findIn(text: string, query: string): FindState {
+    let matches = findAll(text, query);
+    let state = FindState(query = query, matches = matches, current = -1);
+    return state;
+}
+
+## Select the match "Next" goes to from the text view's selection, which
+## starts at scalar index `selectionStart` and spans `selectionLength`
+## characters: the first match that starts after the selection's start, or at
+## or after the insertion point when nothing is selected; after the last
+## match, the first again. So Next from a selected match goes to the next one,
+## overlapping matches included, and Next after a click or an edit goes on
+## from there. Without matches nothing is selected.
+pub func nextMatch(state: FindState, selectionStart: int, selectionLength: int): FindState {
+    var earliest = selectionStart;
+    if (selectionLength > 0) {
+        earliest = selectionStart + 1;
+    }
+    var current = -1;
+    var i = 0;
+    while (current < 0 and i < state.matches.len()) {
+        if (state.matches[i] >= earliest) {
+            current = i;
+        }
+        i = i + 1;
+    }
+    if (current < 0 and state.matches.len() > 0) {
+        current = 0;
+    }
+    let updated = FindState(query = state.query, matches = state.matches, current = current);
+    return updated;
+}
+
+## The scalar index where the selected match starts; -1 when none is.
+pub func selectedStart(state: FindState): int {
+    var start = -1;
+    if (state.current >= 0) {
+        start = state.matches[state.current];
+    }
+    return start;
+}
+
+## The match-count label: "" without a query, "No matches", "3 matches"
+## before the first "Next", then "2 of 3".
+pub func findLabel(state: FindState): string {
+    let count = state.matches.len();
+    var text = "";
+    if (state.query == "") {
+        text = "";
+    } else if (count == 0) {
+        text = "No matches";
+    } else if (state.current < 0) {
+        if (count == 1) {
+            text = "1 match";
+        } else {
+            text = count.to_string() + " matches";
+        }
+    } else {
+        text = (state.current + 1).to_string() + " of " + count.to_string();
+    }
+    return text;
+}

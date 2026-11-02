@@ -1,0 +1,672 @@
+@mode(host.native)
+
+# loup-macos-notepad — a plain-text editor: one window with a text area, a File
+# menu (New, Open…, Save, Save As…), a Find field with Next and a match
+# count, a font size stepper, a Monospaced check box and a status bar with the
+# line, word and character counts.
+#
+# The model and logic live in host.dual modules (textstats, find, document)
+# that `loup test` covers; this module is the AppKit layer over them, built
+# from the appkit library's proxies. Files are read and written with
+# appkit.dialogs' `readTextFile` / `writeTextFile`, which report a failure
+# (a missing file, no permission, bytes that are not UTF-8) with Foundation's
+# description of it, for the alert the app shows.
+#
+# Every handler is a module-level function: the views live in one `Ui` object
+# and the document and find state in module-level values.
+#
+# The app uses no raw Objective-C: everything goes through the appkit
+# proxies.
+#
+# `--self-test [png]` drives the window through its controls, menus and
+# shortcuts with canned dialog answers, prints what the controls show, writes
+# a snapshot to `png` when given, and quits.
+
+from appkit.app import (appInit, run, quit, after, isSelfTest, executableDir, setHandlerErrorsFatal,
+    handlerErrorCount, Window, Menu, MenuItem, insertMenu, editMenu, menuBar, onShouldQuit, shouldQuit,
+    MOD_COMMAND, MOD_SHIFT_COMMAND);
+from appkit.controls import (Label, Button, Checkbox, Stepper, SearchField, systemColor,
+    COLOR_SECONDARY_LABEL, TEXT_RIGHT);
+from appkit.layout import (VStack, HStack, setMinSize, layoutNow, ALIGN_FILL, ALIGN_CENTER);
+from appkit.text import (TextArea, utf16Offset, scalarIndex);
+from appkit.dialogs import (alert, info, openFile, saveFile, setTestAnswers, testAnswersLeft,
+    testLog, readTextFile, writeTextFile);
+from io.fs import (createDir, readText, writeBytes);
+from io.path import (basename, join);
+from textstats import (textStats, statusLine);
+from find import (FindState, emptyFind, findIn, nextMatch, selectedStart, findLabel);
+from document import (Document, CHOICE_SAVE, CHOICE_DONT_SAVE, untitled, withText, savedAt,
+    hasFile, windowTitle, suggestedName, unsavedChoices, unsavedQuestion);
+
+## The window's content size when it opens.
+const WIDTH: float = 640.0;
+const HEIGHT: float = 400.0;
+## The window's minimum content height (its minimum width is the toolbar's).
+const MIN_HEIGHT: float = 240.0;
+## The font size range of the stepper (points).
+const FONT_MIN: float = 9.0;
+const FONT_MAX: float = 36.0;
+const FONT_DEFAULT: float = 13.0;
+
+# ── state ──────────────────────────────────────────────────────────────────
+
+## The window and every control the handlers and the self-test use.
+class Ui {
+    pub let win: Window;
+    pub let editor: TextArea;
+    pub let search: SearchField;
+    pub let next: Button;
+    pub let matches: Label;
+    pub let mono: Checkbox;
+    pub let size: Stepper;
+    pub let sizeLabel: Label;
+    pub let status: Label;
+    pub let newItem: MenuItem;
+    pub let openItem: MenuItem;
+    pub let saveItem: MenuItem;
+    pub let saveAsItem: MenuItem;
+
+    pub func constructor() {
+        let win = Window("Untitled", WIDTH, HEIGHT);
+
+        # Toolbar row: Find on the left, the font controls on the right.
+        let search = SearchField();
+        search.setPlaceholder("Find");
+        search.setWidth(200.0);
+        search.onChange(queryChanged);
+        search.onSubmit(findNext);
+        let next = Button("Next");
+        next.onClick(findNext);
+        let matches = Label("");
+        matches.setWidth(90.0);
+        let mono = Checkbox("Monospaced");
+        mono.onChange(fontChanged);
+        let sizeLabel = Label("");
+        sizeLabel.setAlignment(TEXT_RIGHT);
+        sizeLabel.setWidth(44.0);
+        let size = Stepper(FONT_MIN, FONT_MAX, 1.0, FONT_DEFAULT);
+        size.onChange(fontChanged);
+
+        let toolbar = HStack();
+        toolbar.setInsets(10.0, 12.0, 10.0, 12.0);
+        toolbar.setSpacing(8.0);
+        toolbar.setAlignment(ALIGN_CENTER);
+        toolbar.add(search);
+        toolbar.add(next);
+        toolbar.add(matches);
+        toolbar.addSpacer();
+        toolbar.add(mono);
+        toolbar.add(sizeLabel);
+        toolbar.add(size);
+
+        # Plain text (pasting drops styles, the font applies to everything),
+        # undo on, no smart quotes or dashes.
+        let editor = TextArea();
+        editor.usePlainText(false);
+        editor.setTextInset(10.0, 10.0);
+        editor.onEdited(textEdited);
+        setMinSize(editor.area, 200.0, 120.0);
+
+        let status = Label("");
+        status.setFont(11.0, false);
+        status.applyTextColor(systemColor(COLOR_SECONDARY_LABEL));
+        let statusBar = HStack();
+        statusBar.setInsets(5.0, 12.0, 6.0, 12.0);
+        statusBar.add(status);
+        statusBar.addSpacer();
+
+        let root = VStack();
+        root.setSpacing(0.0);
+        root.setAlignment(ALIGN_FILL);
+        root.add(toolbar);
+        root.addSeparator();
+        root.addExpanding(editor.area);
+        root.addSeparator();
+        root.add(statusBar);
+        win.setContent(root);
+
+        # The toolbar's controls cannot be squeezed, so the window cannot get
+        # narrower than they are: that natural width (it depends on the
+        # system font) is the minimum width.
+        win.fitToContent();
+        let natural = win.contentSize();
+        win.setMinSize(natural.w, MIN_HEIGHT);
+        win.setContentSize(WIDTH, HEIGHT);
+
+        # File goes right after the app menu.
+        let file = Menu("File");
+        let newItem = file.addItem("New", "n", newDocument);
+        let openItem = file.addItem("Open…", "o", openDocument);
+        file.addSeparator();
+        let saveItem = file.addItem("Save", "s", saveDocument);
+        let saveAsItem = file.addItem("Save As…", "S", saveDocumentAs);
+        insertMenu(file, 1);
+
+        # Edit ▸ Find, as in TextEdit.
+        let find = Menu("Find");
+        find.addItem("Find…", "f", focusFind);
+        find.addItem("Find Next", "g", findNext);
+        let edit = editMenu();
+        edit.addSeparator();
+        edit.addSubmenu("Find", find);
+
+        this.win = win;
+        this.editor = editor;
+        this.search = search;
+        this.next = next;
+        this.matches = matches;
+        this.mono = mono;
+        this.size = size;
+        this.sizeLabel = sizeLabel;
+        this.status = status;
+        this.newItem = newItem;
+        this.openItem = openItem;
+        this.saveItem = saveItem;
+        this.saveAsItem = saveAsItem;
+    }
+}
+
+var g_ui: Option[Ui] = None;
+var g_doc: Document = untitled();
+var g_find: FindState = emptyFind();
+## Set once the window was allowed to close (its close check asked about
+## unsaved changes already), so the quit that follows does not ask again.
+## Only this, not the window's visibility, decides whether Quit asks: a
+## minimized window and the window of a hidden app are not visible either.
+var g_window_closed: bool = false;
+
+func ui(): Ui {
+    let u = g_ui.unwrap();
+    return u;
+}
+
+# ── refreshing the window from the state ────────────────────────────────────
+
+func refreshTitle(): void {
+    let u = ui();
+    u.win.setTitle(windowTitle(g_doc));
+    # The title bar's proxy icon and the close button's unsaved dot.
+    u.win.setRepresentedFilename(g_doc.path);
+    u.win.setDocumentEdited(g_doc.edited);
+    return;
+}
+
+## Show the counts of `text` (the editor's current text) in the status bar.
+func refreshStatus(text: string): void {
+    let u = ui();
+    let stats = textStats(text);
+    u.status.setText(statusLine(stats));
+    return;
+}
+
+## Recount the matches of the Find field's query in `text` (the editor's
+## current text). No match is selected after that: the label shows the count.
+func refreshFind(text: string): void {
+    let u = ui();
+    g_find = findIn(text, u.search.text());
+    u.matches.setText(findLabel(g_find));
+    return;
+}
+
+## Show `text` as a new document state (`doc`), e.g. after New or Open, with
+## the insertion point at the start. The undo history belongs to the old
+## text, so it goes.
+func showDocument(text: string, doc: Document): void {
+    let u = ui();
+    u.editor.setText(text);
+    u.editor.clearUndoHistory();
+    u.editor.moveToStart();
+    g_doc = doc;
+    refreshTitle();
+    refreshStatus(text);
+    refreshFind(text);
+    return;
+}
+
+# ── handlers ───────────────────────────────────────────────────────────────
+
+## After every edit, undo and redo (TextArea.onEdited): the text is fetched
+## once and shared by the edited mark, the status bar and the match count.
+func textEdited(): void {
+    let text = ui().editor.text();
+    let was_edited = g_doc.edited;
+    g_doc = withText(g_doc, text);
+    if (g_doc.edited != was_edited) {
+        refreshTitle();
+    }
+    refreshStatus(text);
+    refreshFind(text);
+    return;
+}
+
+## The Find field's text changed.
+func queryChanged(): void {
+    let text = ui().editor.text();
+    refreshFind(text);
+    return;
+}
+
+## Select the next match after the text view's selection (from the Next
+## button, Return in the Find field, or ⌘G), wrapping at the end.
+func findNext(): void {
+    let u = ui();
+    let text = u.editor.text();
+    let selection = u.editor.selectedRange();
+    let sel_start = scalarIndex(text, selection.location);
+    let sel_end = scalarIndex(text, selection.location + selection.length);
+    let found = findIn(text, u.search.text());
+    g_find = nextMatch(found, sel_start, sel_end - sel_start);
+    u.matches.setText(findLabel(g_find));
+    let start = selectedStart(g_find);
+    if (start < 0) {
+        return;
+    }
+    let first = utf16Offset(text, start);
+    let last = utf16Offset(text, start + g_find.query.length());
+    u.editor.setSelectedRange(first, last - first);
+    u.editor.scrollRangeToVisible(first, last - first);
+    return;
+}
+
+func focusFind(): void {
+    let u = ui();
+    u.search.focus();
+    return;
+}
+
+func fontChanged(): void {
+    let u = ui();
+    let points = u.size.value();
+    u.editor.setFont(points, u.mono.checked());
+    u.sizeLabel.setText((points as int).to_string() + " pt");
+    return;
+}
+
+func newDocument(): void {
+    if (not resolveUnsavedChanges()) {
+        return;
+    }
+    showDocument("", untitled());
+    return;
+}
+
+func openDocument(): void {
+    if (not resolveUnsavedChanges()) {
+        return;
+    }
+    let path = openFile([]);
+    if (path == "") {
+        return;
+    }
+    let read = readTextFile(path);
+    if (not read.succeeded) {
+        info("The document “" + basename(path) + "” could not be opened.", read.failure);
+        return;
+    }
+    showDocument(read.contents, savedAt(path, read.contents));
+    return;
+}
+
+func saveDocument(): void {
+    save();
+    return;
+}
+
+func saveDocumentAs(): void {
+    saveAs();
+    return;
+}
+
+## Write the text to the document's file (asking for one if it has none).
+## Returns whether it was saved.
+func save(): bool {
+    if (not hasFile(g_doc)) {
+        let saved = saveAs();
+        return saved;
+    }
+    let saved = writeTo(g_doc.path);
+    return saved;
+}
+
+## Ask where to save the text, then write it there. Returns whether it was
+## saved (false when the panel was cancelled or the write failed).
+func saveAs(): bool {
+    let path = saveFile(suggestedName(g_doc));
+    if (path == "") {
+        return false;
+    }
+    let saved = writeTo(path);
+    return saved;
+}
+
+func writeTo(path: string): bool {
+    let u = ui();
+    let text = u.editor.text();
+    let failure = writeTextFile(path, text);
+    if (failure != "") {
+        info("The document could not be saved as “" + basename(path) + "”.", failure);
+        return false;
+    }
+    g_doc = savedAt(path, text);
+    # Typing after the save starts a new undo step, so one Undo returns to
+    # the saved text (as TextEdit does).
+    u.editor.breakUndoCoalescing();
+    refreshTitle();
+    return true;
+}
+
+## Before the text is replaced or the app quits: when there are unsaved
+## changes, ask Save / Don't Save / Cancel. Returns whether to go ahead.
+func resolveUnsavedChanges(): bool {
+    if (not g_doc.edited) {
+        return true;
+    }
+    let choice = alert(unsavedQuestion(g_doc), "Your changes will be lost if you don't save them.",
+        unsavedChoices());
+    if (choice == CHOICE_SAVE) {
+        let saved = save();
+        return saved;
+    }
+    let proceed = choice == CHOICE_DONT_SAVE;
+    return proceed;
+}
+
+# ── closing and quitting with unsaved changes ──────────────────────────────
+
+# When one of these checks throws (the alert or the save failed), appkit
+# reports the exception and refuses the close or quit, so the document stays
+# open with its edits.
+
+## Window.onShouldClose — the close button, ⌘W, Window ▸ Close.
+func windowShouldClose(): bool {
+    let allow = resolveUnsavedChanges();
+    if (allow) {
+        g_window_closed = true;
+    }
+    return allow;
+}
+
+## onShouldQuit — ⌘Q, Quit from the Dock, logging out. Asks about unsaved
+## changes unless the window has closed (and asked) already — whether the
+## window is on screen, minimized or hidden with the app (⌘H).
+func appShouldQuit(): bool {
+    if (g_window_closed) {
+        return true;
+    }
+    let allow = resolveUnsavedChanges();
+    return allow;
+}
+
+# ── self-test ──────────────────────────────────────────────────────────────
+
+## Type `text` at the end of the document, as the keyboard would.
+func typeAtEnd(text: string): void {
+    let u = ui();
+    u.editor.focus();
+    u.editor.moveToEnd();
+    u.editor.insert(text);
+    return;
+}
+
+## Choose `item` as a click on it would; throws when nothing answered it.
+func choose(item: MenuItem): void {
+    if (not item.perform()) {
+        throw RuntimeError("notepad: nothing answered the menu item " + item.title());
+    }
+    return;
+}
+
+## Press the shortcut `chars` + `modifiers` in the window; throws when no
+## control or menu item took it.
+func press(chars: string, modifiers: int): void {
+    if (not ui().win.sendKey(chars, modifiers)) {
+        throw RuntimeError("notepad: nothing took the shortcut " + chars);
+    }
+    return;
+}
+
+func printWindow(step: string): void {
+    let u = ui();
+    println("[" + step + "]");
+    println("  title: " + u.win.title());
+    println("  status: " + u.status.text());
+    return;
+}
+
+func printSelection(): void {
+    let u = ui();
+    let text = u.editor.text();
+    let selection = u.editor.selectedRange();
+    let at = scalarIndex(text, selection.location);
+    println("  find: " + u.matches.text() + ", selected [" + u.editor.selectedText() + "] at "
+        + at.to_string());
+    return;
+}
+
+## The alerts the last step showed, from the canned answers' log (the panels'
+## lines are left out: they hold absolute paths).
+func printAlerts(): void {
+    for (line in testLog()) {
+        if (line.startsWith("alert") or line.startsWith("info")) {
+            println("  " + line);
+        }
+    }
+    return;
+}
+
+func printText(): void {
+    let lines = ui().editor.text().split("\n");
+    for (line in lines) {
+        println("  | " + line);
+    }
+    return;
+}
+
+func printCanUndo(): void {
+    println("  undo available: " + ui().editor.canUndo().to_string());
+    return;
+}
+
+## The self-test's files go to .temp/ beside the executable (in the app's
+## directory when it is run from there, as the gate does).
+func scratchDir(): string {
+    let dir = join([executableDir(), ".temp"]);
+    createDir(dir);
+    return dir;
+}
+
+## The window keeps its minimum size: the toolbar fits in it, so its
+## constraints do not push the window wider.
+func printMinimumSize(): void {
+    let u = ui();
+    let min = u.win.minSize();
+    u.win.setContentSize(min.w, min.h);
+    layoutNow(u.win.content());
+    let size = u.win.contentSize();
+    let kept = size.w - min.w < 1.0 and min.w - size.w < 1.0 and size.h - min.h < 1.0
+        and min.h - size.h < 1.0;
+    println("  at its minimum size the toolbar fits: " + kept.to_string());
+    u.win.setContentSize(WIDTH, HEIGHT);
+    return;
+}
+
+func selfTest(): void {
+    let u = ui();
+    let dir = scratchDir();
+    let notes = join([dir, "notes.txt"]);
+    let scratch = join([dir, "scratch.txt"]);
+    let copy = join([dir, "copy.txt"]);
+    let latin1 = join([dir, "latin1.txt"]);
+    printWindow("start");
+    printMinimumSize();
+
+    typeAtEnd("The quick brown fox jumps over the lazy dog.\n");
+    typeAtEnd("A second line: naïve café, 日本語, emoji 😀 and a fox.\n");
+    typeAtEnd("foxfox and fox");
+    printWindow("typed");
+
+    # Next goes on from the selection: from the end of the text it wraps to
+    # the first match, then visits every match and wraps again.
+    println("[find]");
+    u.search.typeText("fox");
+    println("  find field: " + u.search.text() + " -> " + u.matches.text());
+    u.next.click();
+    printSelection();
+    u.next.click();
+    printSelection();
+    u.search.submit();
+    printSelection();
+    u.next.click();
+    printSelection();
+    u.next.click();
+    printSelection();
+    u.next.click();
+    printSelection();
+    u.search.typeText("FOX");
+    println("  find field: " + u.search.text() + " -> " + u.matches.text());
+    u.search.submit();
+    printSelection();
+
+    u.size.stepUp();
+    u.size.stepUp();
+    u.size.stepUp();
+    u.mono.click();
+    let font = u.editor.font();
+    let fixed = font.isFixedPitch();
+    println("[font] size control: " + u.sizeLabel.text() + ", monospaced box: "
+        + u.mono.checked().to_string() + ", text view font: " + (font.size() as int).to_string()
+        + " pt, fixed pitch: " + fixed.to_string());
+
+    # File ▸ Save on an untitled document asks for a file: the canned answer.
+    setTestAnswers([notes]);
+    choose(u.saveItem);
+    printWindow("saved");
+    println("  file on disk matches the editor: " + (readText(notes) == u.editor.text()).to_string());
+
+    # Each step below is one "event" of its own, as a key press is: the
+    # self-test runs inside one timer, so it closes the undo step itself.
+    u.editor.endUndoStep();
+    typeAtEnd("\nAn unsaved line.");
+    printWindow("edited after saving");
+    println("  find: " + u.matches.text());
+    u.editor.endUndoStep();
+
+    # Edit ▸ Undo takes the text back to what was saved: the mark goes.
+    choose(editMenu().itemWithTitle("Undo"));
+    printWindow("Undo");
+    u.editor.endUndoStep();
+    press("Z", MOD_SHIFT_COMMAND);
+    printWindow("Redo (⇧⌘Z)");
+
+    # New (⌘N) with unsaved changes: Cancel first (nothing happens), then
+    # Don't Save.
+    setTestAnswers(["2"]);
+    choose(u.newItem);
+    printWindow("New, Cancel");
+    printAlerts();
+    setTestAnswers(["1"]);
+    choose(u.newItem);
+    printWindow("New, Don't Save");
+    printAlerts();
+    println("  find: " + u.matches.text());
+    printCanUndo();
+
+    # Open (⌘O) with unsaved changes: Save asks where (scratch.txt), then the
+    # Open panel's answer reopens notes.txt.
+    typeAtEnd("Scratch ✓");
+    setTestAnswers(["0", scratch, notes]);
+    choose(u.openItem);
+    printWindow("Open, Save first");
+    printAlerts();
+    println("  scratch.txt on disk: " + readText(scratch));
+    println("  find: " + u.matches.text());
+    println("  dialog answers left: " + testAnswersLeft().to_string());
+    printCanUndo();
+    printText();
+
+    # Save As (⇧⌘S) writes a copy and renames the document.
+    setTestAnswers([copy]);
+    choose(u.saveAsItem);
+    printWindow("Save As");
+    println("  copy on disk matches the editor: " + (readText(copy) == u.editor.text()).to_string());
+
+    # Opening a file that is not UTF-8 reports it and keeps the document.
+    writeBytes(latin1, b"caf\xe9\n");
+    setTestAnswers([latin1, "OK"]);
+    choose(u.openItem);
+    printWindow("Open a file that is not UTF-8");
+    printAlerts();
+
+    # ⌘G (Edit ▸ Find ▸ Find Next) from the insertion point at the start of
+    # the reopened text selects the first match.
+    println("[Find Next (⌘G)]");
+    press("g", MOD_COMMAND);
+    printSelection();
+
+    let argv = runtime.args();
+    if (argv.len() > 1) {
+        u.win.snapshot(argv[1]);
+    }
+
+    # ⌘W with unsaved changes asks; Cancel keeps the window open.
+    typeAtEnd("\nThe end.");
+    setTestAnswers(["2"]);
+    press("w", MOD_COMMAND);
+    printWindow("Close (⌘W), Cancel");
+    println("  window open: " + u.win.isVisible().to_string() + ", edited mark: "
+        + u.win.isDocumentEdited().to_string());
+    printAlerts();
+
+    # When the close check itself fails (here the alert: no answer is queued,
+    # so it throws), appkit refuses the close and the edits stay. The error
+    # is printed on stderr; it must not end the self-test.
+    setHandlerErrorsFatal(false);
+    let errors_before = handlerErrorCount();
+    press("w", MOD_COMMAND);
+    println("[Close (⌘W), the check throws]");
+    println("  window open: " + u.win.isVisible().to_string() + ", handler errors: "
+        + (handlerErrorCount() - errors_before).to_string() + ", title: " + u.win.title());
+
+    # Quit with unsaved changes while the window is off screen (as when it is
+    # minimized or the app is hidden): ⌘Q still asks, and Cancel keeps the
+    # app running. Asked again, Save writes copy.txt and lets it quit.
+    # A quit check that throws refuses the quit in the same way.
+    u.win.hide();
+    println("[Quit while the window is off screen]");
+    println("  window visible: " + u.win.isVisible().to_string() + ", file in the title bar: "
+        + basename(u.win.representedFilename()));
+    let errors_quit = handlerErrorCount();
+    println("  the check throws -> quit now: " + shouldQuit().to_string() + ", handler errors: "
+        + (handlerErrorCount() - errors_quit).to_string());
+    setHandlerErrorsFatal(true);
+    setTestAnswers(["2"]);
+    let taken = menuBar().sendKey("q", MOD_COMMAND);
+    println("  ⌘Q taken: " + taken.to_string() + ", Cancel -> still running, dialog answers left: "
+        + testAnswersLeft().to_string());
+    printAlerts();
+    setTestAnswers(["0"]);
+    println("  Save -> quit now: " + shouldQuit().to_string());
+    printAlerts();
+    printWindow("saved before quitting");
+    println("  copy on disk matches the editor: " + (readText(copy) == u.editor.text()).to_string()
+        + ", edited mark: " + u.win.isDocumentEdited().to_string());
+    # Nothing is unsaved now: the quit asks nothing.
+    setTestAnswers([]);
+    quit();
+    return;
+}
+
+pub func main(): void {
+    appInit("Notepad");
+    let u = Ui();
+    g_ui = Some(u);
+    u.win.onShouldClose(windowShouldClose);
+    onShouldQuit(appShouldQuit);
+    fontChanged();
+    showDocument("", untitled());
+    if (isSelfTest()) {
+        after(0.4, selfTest);
+    }
+    run(u.win);
+    return;
+}
